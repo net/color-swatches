@@ -97,16 +97,16 @@ function Slider(props: {
 
   return (
     <div>
-      <label className="block mb-3 font-medium border-b-black border-b-1 pb-1">
+      <label className="mb-3 block border-b-1 border-b-black pb-1 font-medium">
         {props.label}
       </label>
 
-      <div className="flex gap-[10px] items-center">
+      <div className="flex items-center gap-[10px]">
         <div
           ref={containerRef}
           onMouseDown={handleMouseDown}
           onTouchStart={handleTouchStart}
-          className="relative w-[300px] cursor-pointer select-none border border-black box-content overflow-clip"
+          className="relative box-content w-[300px] cursor-pointer overflow-clip border border-black select-none"
         >
           {props.colorSpace &&
             props.axis &&
@@ -124,20 +124,19 @@ function Slider(props: {
 
           {/* Indicator line */}
           <div
-            className="absolute top-0 bottom-0 w-[6px] bg-white border-black border -my-1 pointer-events-none -translate-x-[3px]"
+            className="pointer-events-none absolute top-0 bottom-0 -my-1 w-[6px] -translate-x-[3px] border border-black bg-white"
             style={{ left: `${percentage}%` }}
           />
         </div>
 
         <input
           type="number"
-          dir="rtl"
           value={props.value.toFixed(getDecimalPlaces())}
           onChange={handleNumberChange}
           min={props.min ?? 0}
           max={props.max ?? 100}
           step={props.step ?? 1}
-          className="w-[62px] py-1 px-2 border border-black outline-none h-[42px] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          className="h-[42px] w-[62px] [appearance:textfield] border border-black px-2 py-1 outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
       </div>
     </div>
