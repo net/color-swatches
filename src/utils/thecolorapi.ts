@@ -61,7 +61,10 @@ export async function* namedColorsGenerator(
             currentName,
             colors,
             signal,
-          ).then((index) => ({ index, name: nextName })),
+          ).then(async (index) => ({
+            index,
+            name: await fetchColorName(colors[index]),
+          })),
         );
       }
     }
