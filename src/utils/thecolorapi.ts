@@ -32,57 +32,73 @@ export async function* namedColorsGenerator(
     const JUMP = 10;
 
     // Phase 1: Fetch samples in parallel
-    const sampleIndices = Array.from(
-      { length: Math.floor(colors.length / JUMP) },
-      (_, i) => i * JUMP,
-    );
+    const sampleIndices: number[] = [];
+    for (let i = 0; i < colors.length; i += JUMP) {
+      sampleIndices.push(i);
+    }
+    // Include last index to catch trailing colors
+    if (sampleIndices[sampleIndices.length - 1] !== colors.length - 1) {
+      sampleIndices.push(colors.length - 1);
+    }
     const sampleNames = await Promise.all(
       sampleIndices.map((i) => fetchColorName(colors[i])),
     );
 
     if (signal?.aborted) return;
 
-    // Phase 2: Identify boundaries and launch binary searches in parallel
-    const colorPromises: Promise<{ index: number; name: string }>[] = [];
+    // Cache sampled indices to avoid duplicate API calls
+    const indexNameCache = new Map<number, Promise<string>>();
+    for (let i = 0; i < sampleIndices.length; i++) {
+      indexNameCache.set(sampleIndices[i], Promise.resolve(sampleNames[i]));
+    }
+    const getName = (i: number) => {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      let p = indexNameCache.get(i);
+      if (!p) {
+        p = fetchColorName(colors[i]);
+        indexNameCache.set(i, p);
+      }
+      return p;
+    };
 
-    // First color is always at index 0
-    colorPromises.push(Promise.resolve({ index: 0, name: sampleNames[0] }));
+    // Phase 2: Binary search windows in parallel to find all boundaries
+    const windowPromises: Promise<Array<{ index: number; name: string }>>[] = [];
 
     for (let i = 0; i < sampleIndices.length - 1; i++) {
-      const currentName = sampleNames[i];
-      const nextName = sampleNames[i + 1];
+      const startIndex = sampleIndices[i];
+      const endIndex = sampleIndices[i + 1];
+      const startName = sampleNames[i];
+      const endName = sampleNames[i + 1];
 
-      // Boundary detected: binary search for exact first index of next color
-      if (currentName !== nextName) {
-        colorPromises.push(
-          binarySearchBoundary(
-            sampleIndices[i],
-            sampleIndices[i + 1],
-            currentName,
-            colors,
+      if (startName !== endName) {
+        windowPromises.push(
+          findBoundariesInRange(
+            startIndex,
+            endIndex,
+            startName,
+            endName,
+            getName,
             signal,
-          ).then(async (index) => ({
-            index,
-            name: await fetchColorName(colors[index]),
-          })),
+          ),
         );
+      } else {
+        windowPromises.push(Promise.resolve([]));
       }
     }
 
-    // Phase 3: Yield in order as searches complete
-    // Binary searches run in parallel, but we await them sequentially to maintain order
+    // Phase 3: Yield in order as scans complete
+    // Window scans run in parallel, but we emit results sequentially to maintain order
     const emittedNames = new Set<string>();
-    for (const promise of colorPromises) {
-      if (signal?.aborted) return;
-      const { index, name } = await promise;
-      if (emittedNames.has(name)) continue;
+
+    const emit = (index: number, name: string) => {
+      if (emittedNames.has(name)) return;
       emittedNames.add(name);
 
       const hsl = colors[index];
       const color = new Color('hsl', [hsl[0], hsl[1], hsl[2]]);
       const rgb = color.to('srgb');
 
-      yield {
+      return {
         name,
         color: {
           hsl,
@@ -94,6 +110,20 @@ export async function* namedColorsGenerator(
           hex: color.to('srgb').toString({ format: 'hex' }),
         },
       } as NamedColor;
+    };
+
+    // Emit first color
+    const first = emit(0, sampleNames[0]);
+    if (first) yield first;
+
+    // Emit boundaries from each window in order
+    for (const windowPromise of windowPromises) {
+      if (signal?.aborted) return;
+      const boundaries = await windowPromise;
+      for (const boundary of boundaries) {
+        const result = emit(boundary.index, boundary.name);
+        if (result) yield result;
+      }
     }
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -103,28 +133,54 @@ export async function* namedColorsGenerator(
   }
 }
 
-async function binarySearchBoundary(
+async function findBoundariesInRange(
   startIndex: number,
   endIndex: number,
   startName: string,
-  colors: HSL[],
+  endName: string,
+  getName: (i: number) => Promise<string>,
   signal?: AbortSignal,
-): Promise<number> {
-  let left = startIndex + 1;
-  let right = endIndex;
+): Promise<Array<{ index: number; name: string }>> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  while (left < right) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  // Safety: no boundary if endpoints equal
+  if (startIndex >= endIndex || startName === endName) return [];
 
-    const mid = Math.floor((left + right) / 2);
-    const name = await fetchColorName(colors[mid]);
-
-    if (name === startName) {
-      left = mid + 1;
-    } else {
-      right = mid;
-    }
+  // Base: adjacent indices => boundary is at endIndex with endName
+  if (endIndex - startIndex === 1) {
+    return [{ index: endIndex, name: endName }];
   }
 
-  return left;
+  const mid = Math.floor((startIndex + endIndex) / 2);
+  const midName = await getName(mid);
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+  if (midName === startName) {
+    // Entire change is in the right half [mid, endIndex]
+    return findBoundariesInRange(mid, endIndex, midName, endName, getName, signal);
+  }
+  if (midName === endName) {
+    // Entire change is in the left half [startIndex, mid]
+    return findBoundariesInRange(startIndex, mid, startName, midName, getName, signal);
+  }
+
+  // mid differs from both ends -> there are boundaries on both sides
+  const left = await findBoundariesInRange(
+    startIndex,
+    mid,
+    startName,
+    midName,
+    getName,
+    signal,
+  );
+  const right = await findBoundariesInRange(
+    mid,
+    endIndex,
+    midName,
+    endName,
+    getName,
+    signal,
+  );
+  // left indices < right indices by construction
+  return left.concat(right);
 }
